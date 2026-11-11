@@ -10,52 +10,18 @@ import {
   fromCents,
   getUtcWeekBounds,
   roundCurrency,
-  subtractCurrency,
   sumCurrency,
   toCents,
 } from '../utils/financeUtils';
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
-/**
- * Counts how many paychecks occur within the given UTC year/month for a pay schedule.
- */
-function countPaychecksInMonth(
-  paySchedule: PaySchedule,
-  nextPayDate: Date,
-  year: number,
-  month: number,
-): number {
-  if (paySchedule === 'monthly') return 1;
-  if (paySchedule === 'twice-monthly') return 2;
-
-  const stepDays = paySchedule === 'weekly' ? 7 : 14;
-  const stepMs = stepDays * MS_PER_DAY;
-  const monthStartMs = Date.UTC(year, month, 1);
-  const monthEndMs = Date.UTC(year, month + 1, 0, 23, 59, 59, 999);
-
-  let cursorMs = Date.UTC(
-    nextPayDate.getUTCFullYear(),
-    nextPayDate.getUTCMonth(),
-    nextPayDate.getUTCDate(),
-  );
-
-  if (cursorMs < monthStartMs) {
-    const stepsForward = Math.ceil((monthStartMs - cursorMs) / stepMs);
-    cursorMs += stepsForward * stepMs;
-  } else if (cursorMs > monthStartMs) {
-    const stepsBackward = Math.floor((cursorMs - monthStartMs) / stepMs);
-    cursorMs -= stepsBackward * stepMs;
-  }
-
-  let count = 0;
-  while (cursorMs <= monthEndMs) {
-    count += 1;
-    cursorMs += stepMs;
-  }
-
-  return count;
-}
+const MONTHLY_INCOME_MULTIPLIERS: Record<PaySchedule, number> = {
+  weekly: 52 / 12,
+  biweekly: 26 / 12,
+  'twice-monthly': 2,
+  monthly: 1,
+};
 
 /**
  * Counts how many paychecks from an income source occur within `[rangeStartMs, rangeEndMs]` (inclusive).
@@ -164,7 +130,7 @@ function resolveNextPayDateMs(income: IIncome, todayStartMs: number): number {
 
 /**
  * Resolves the next occurrence (>= todayStartMs) of a monthly bill due day (1-31),
- * falling back to the last valid day of shorter months.
+ * falling back to the last valid day of shorter months (e.g. 31st -> 30th or 28th/29th).
  */
 function resolveNextBillDueDateMs(
   dueDay: number,
@@ -193,23 +159,68 @@ function serializeUpcomingBill(bill: IBill, dueMs: number) {
   };
 }
 
-function calculateCurrentMonthIncome(incomes: IIncome[], year: number, month: number): number {
+/**
+ * Estimates monthly income using the same cadence multipliers as the Budget Planner:
+ * weekly * 52/12, biweekly * 26/12, twice-monthly * 2, monthly * 1.
+ */
+function calculateEstimatedMonthlyIncome(incomes: IIncome[]): number {
   const totalCents = incomes.reduce((sumCents, income) => {
-    const occurrences = countPaychecksInMonth(
-      income.paySchedule,
-      income.nextPayDate,
-      year,
-      month,
-    );
-    return sumCents + toCents(income.amount) * occurrences;
+    const multiplier = MONTHLY_INCOME_MULTIPLIERS[income.paySchedule] ?? 1;
+    return sumCents + Math.round(toCents(income.amount) * multiplier);
   }, 0);
 
   return fromCents(totalCents);
 }
 
 /**
- * Computes current-month income, expenses, remaining budget, category breakdown,
- * and unpaid bills due before the user's next paycheck.
+ * Filters unpaid bills whose month-end-adjusted due date falls before the user's earliest next pay date.
+ */
+function computeUpcomingBills(
+  incomes: IIncome[],
+  unpaidBills: IBill[],
+  year: number,
+  month: number,
+  todayStartMs: number,
+) {
+  const earliestNextPayDateMs =
+    incomes.length > 0
+      ? Math.min(...incomes.map((inc) => resolveNextPayDateMs(inc, todayStartMs)))
+      : null;
+
+  const upcomingBills =
+    earliestNextPayDateMs === null
+      ? []
+      : unpaidBills
+          .map((bill) => ({
+            bill,
+            dueMs: resolveNextBillDueDateMs(bill.dueDate, year, month, todayStartMs),
+          }))
+          .filter(({ dueMs }) => dueMs < earliestNextPayDateMs)
+          .sort((a, b) => a.dueMs - b.dueMs)
+          .map(({ bill, dueMs }) => serializeUpcomingBill(bill, dueMs));
+
+  const upcomingBillsTotal = sumCurrency(upcomingBills.map((bill) => bill.amount));
+
+  return { earliestNextPayDateMs, upcomingBills, upcomingBillsTotal };
+}
+
+function calculateRemainingBudget(
+  currentMonthIncome: number,
+  currentMonthExpenses: number,
+  upcomingUnpaidBillsTotal: number,
+  totalSavingsContributions: number,
+): number {
+  return fromCents(
+    toCents(currentMonthIncome) -
+      toCents(currentMonthExpenses) -
+      toCents(upcomingUnpaidBillsTotal) -
+      toCents(totalSavingsContributions),
+  );
+}
+
+/**
+ * Computes current-month income, expenses, upcoming bills, savings contributions,
+ * remaining budget, and category breakdown for the authenticated user.
  */
 export async function getDashboardSummary(
   req: Request,
@@ -227,16 +238,17 @@ export async function getDashboardSummary(
     const monthStart = new Date(Date.UTC(year, month, 1, 0, 0, 0, 0));
     const monthEnd = new Date(Date.UTC(year, month + 1, 0, 23, 59, 59, 999));
 
-    const [incomes, expenses, unpaidBills] = await Promise.all([
+    const [incomes, expenses, unpaidBills, goals] = await Promise.all([
       Income.find({ userId }),
       Expense.find({
         userId,
         date: { $gte: monthStart, $lte: monthEnd },
       }),
       Bill.find({ userId, isPaid: false }).sort({ dueDate: 1, name: 1 }),
+      Goal.find({ userId }),
     ]);
 
-    const currentMonthIncome = calculateCurrentMonthIncome(incomes, year, month);
+    const currentMonthIncome = calculateEstimatedMonthlyIncome(incomes);
 
     const categoryMap = new Map<string, { totalCents: number; count: number }>();
     let totalExpensesCents = 0;
@@ -255,7 +267,6 @@ export async function getDashboardSummary(
     }
 
     const currentMonthExpenses = fromCents(totalExpensesCents);
-    const remainingBudget = subtractCurrency(currentMonthIncome, currentMonthExpenses);
 
     const expensesByCategory = Array.from(categoryMap.entries())
       .map(([category, stats]) => ({
@@ -265,24 +276,16 @@ export async function getDashboardSummary(
       }))
       .sort((a, b) => b.total - a.total);
 
-    const earliestNextPayDateMs =
-      incomes.length > 0
-        ? Math.min(...incomes.map((inc) => resolveNextPayDateMs(inc, todayStartMs)))
-        : null;
+    const { earliestNextPayDateMs, upcomingBills, upcomingBillsTotal } =
+      computeUpcomingBills(incomes, unpaidBills, year, month, todayStartMs);
 
-    const upcomingBills =
-      earliestNextPayDateMs === null
-        ? []
-        : unpaidBills
-            .map((bill) => ({
-              bill,
-              dueMs: resolveNextBillDueDateMs(bill.dueDate, year, month, todayStartMs),
-            }))
-            .filter(({ dueMs }) => dueMs < earliestNextPayDateMs)
-            .sort((a, b) => a.dueMs - b.dueMs)
-            .map(({ bill, dueMs }) => serializeUpcomingBill(bill, dueMs));
-
-    const upcomingBillsTotal = sumCurrency(upcomingBills.map((bill) => bill.amount));
+    const totalSavingsContributions = sumCurrency(goals.map((goal) => goal.savedAmount));
+    const remainingBudget = calculateRemainingBudget(
+      currentMonthIncome,
+      currentMonthExpenses,
+      upcomingBillsTotal,
+      totalSavingsContributions,
+    );
 
     const monthLabel = `${year}-${String(month + 1).padStart(2, '0')}`;
 
@@ -290,6 +293,8 @@ export async function getDashboardSummary(
       month: monthLabel,
       currentMonthIncome,
       currentMonthExpenses,
+      upcomingBillsTotal,
+      totalSavingsContributions,
       remainingBudget,
       expensesByCategory,
       nextPayDate:
@@ -297,7 +302,6 @@ export async function getDashboardSummary(
           ? new Date(earliestNextPayDateMs).toISOString()
           : null,
       upcomingBills,
-      upcomingBillsTotal,
     });
   } catch (error) {
     next(error);
@@ -360,7 +364,7 @@ export async function getWeeklyCheckIn(
     }, 0);
     const spendingThisWeek = fromCents(spendingThisWeekCents);
 
-    const currentMonthIncome = calculateCurrentMonthIncome(incomes, year, month);
+    const currentMonthIncome = calculateEstimatedMonthlyIncome(incomes);
     const monthStartMs = monthStart.getTime();
     const monthEndMs = monthEnd.getTime();
     const currentMonthExpensesCents = expenses.reduce((sumCents, expense) => {
@@ -369,9 +373,13 @@ export async function getWeeklyCheckIn(
         ? sumCents + toCents(expense.amount)
         : sumCents;
     }, 0);
-    const remainingBudget = subtractCurrency(
-      currentMonthIncome,
-      fromCents(currentMonthExpensesCents),
+
+    const { upcomingBillsTotal } = computeUpcomingBills(
+      incomes,
+      unpaidBills,
+      year,
+      month,
+      todayStartMs,
     );
 
     const totalSaved = sumCurrency(goals.map((g) => g.savedAmount));
@@ -379,6 +387,13 @@ export async function getWeeklyCheckIn(
     const completedGoalsCount = goals.filter(
       (g) => toCents(g.targetAmount) > 0 && toCents(g.savedAmount) >= toCents(g.targetAmount),
     ).length;
+
+    const remainingBudget = calculateRemainingBudget(
+      currentMonthIncome,
+      fromCents(currentMonthExpensesCents),
+      upcomingBillsTotal,
+      totalSaved,
+    );
 
     res.status(200).json({
       weekStart: new Date(weekStartMs).toISOString(),
