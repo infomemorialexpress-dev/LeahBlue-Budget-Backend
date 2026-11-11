@@ -10,10 +10,12 @@ const app = express();
 const allowedOrigins = Array.from(
   new Set(
     [
+      'http://localhost:5173',
+      'http://localhost:3000',
+      'http://127.0.0.1:5173',
+      'https://leah-blue-budget.vercel.app',
       process.env.FRONTEND_URL,
       process.env.CORS_ORIGIN,
-      'http://localhost:5173',
-      'http://127.0.0.1:5173',
     ]
       .filter((origin): origin is string => Boolean(origin))
       .map((origin) => origin.trim().replace(/\/+$/, '')),
@@ -23,9 +25,9 @@ const allowedOrigins = Array.from(
 app.use(
   cors({
     origin: allowedOrigins,
-    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization'],
     credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
   }),
 );
 app.use(express.json());
