@@ -195,7 +195,7 @@ function computeUpcomingBills(
             bill,
             dueMs: resolveNextBillDueDateMs(bill.dueDate, year, month, todayStartMs),
           }))
-          .filter(({ dueMs }) => dueMs < earliestNextPayDateMs)
+          .filter(({ dueMs }) => dueMs <= earliestNextPayDateMs)
           .sort((a, b) => a.dueMs - b.dueMs)
           .map(({ bill, dueMs }) => serializeUpcomingBill(bill, dueMs));
 
@@ -204,15 +204,33 @@ function computeUpcomingBills(
   return { earliestNextPayDateMs, upcomingBills, upcomingBillsTotal };
 }
 
+function sumPaidBillsForMonth(
+  bills: readonly IBill[],
+  monthStartMs: number,
+  monthEndMs: number,
+): number {
+  const paidCents = bills.reduce((sumCents, bill) => {
+    if (!bill.isPaid) return sumCents;
+    const updatedMs = bill.updatedAt.getTime();
+    return updatedMs >= monthStartMs && updatedMs <= monthEndMs
+      ? sumCents + toCents(bill.amount)
+      : sumCents;
+  }, 0);
+
+  return fromCents(paidCents);
+}
+
 function calculateRemainingBudget(
   currentMonthIncome: number,
   currentMonthExpenses: number,
+  currentMonthPaidBills: number,
   upcomingUnpaidBillsTotal: number,
   totalSavingsContributions: number,
 ): number {
   return fromCents(
     toCents(currentMonthIncome) -
       toCents(currentMonthExpenses) -
+      toCents(currentMonthPaidBills) -
       toCents(upcomingUnpaidBillsTotal) -
       toCents(totalSavingsContributions),
   );
@@ -238,15 +256,22 @@ export async function getDashboardSummary(
     const monthStart = new Date(Date.UTC(year, month, 1, 0, 0, 0, 0));
     const monthEnd = new Date(Date.UTC(year, month + 1, 0, 23, 59, 59, 999));
 
-    const [incomes, expenses, unpaidBills, goals] = await Promise.all([
+    const [incomes, expenses, allBills, goals] = await Promise.all([
       Income.find({ userId }),
       Expense.find({
         userId,
         date: { $gte: monthStart, $lte: monthEnd },
       }),
-      Bill.find({ userId, isPaid: false }).sort({ dueDate: 1, name: 1 }),
+      Bill.find({ userId }).sort({ dueDate: 1, name: 1 }),
       Goal.find({ userId }),
     ]);
+
+    const unpaidBills = allBills.filter((bill) => !bill.isPaid);
+    const currentMonthPaidBills = sumPaidBillsForMonth(
+      allBills,
+      monthStart.getTime(),
+      monthEnd.getTime(),
+    );
 
     const currentMonthIncome = calculateEstimatedMonthlyIncome(incomes);
 
@@ -283,6 +308,7 @@ export async function getDashboardSummary(
     const remainingBudget = calculateRemainingBudget(
       currentMonthIncome,
       currentMonthExpenses,
+      currentMonthPaidBills,
       upcomingBillsTotal,
       totalSavingsContributions,
     );
@@ -293,6 +319,7 @@ export async function getDashboardSummary(
       month: monthLabel,
       currentMonthIncome,
       currentMonthExpenses,
+      currentMonthPaidBills,
       upcomingBillsTotal,
       totalSavingsContributions,
       remainingBudget,
@@ -333,15 +360,17 @@ export async function getWeeklyCheckIn(
     const queryStart = new Date(Math.min(monthStart.getTime(), weekStartMs));
     const queryEnd = new Date(Math.max(monthEnd.getTime(), weekEndMs));
 
-    const [incomes, expenses, unpaidBills, goals] = await Promise.all([
+    const [incomes, expenses, allBills, goals] = await Promise.all([
       Income.find({ userId }),
       Expense.find({
         userId,
         date: { $gte: queryStart, $lte: queryEnd },
       }),
-      Bill.find({ userId, isPaid: false }).sort({ dueDate: 1, name: 1 }),
+      Bill.find({ userId }).sort({ dueDate: 1, name: 1 }),
       Goal.find({ userId }),
     ]);
+
+    const unpaidBills = allBills.filter((bill) => !bill.isPaid);
 
     const incomeReceivedCents = incomes.reduce((sumCents, income) => {
       const count = countPaychecksInRange(income, weekStartMs, todayEndMs);
@@ -381,6 +410,7 @@ export async function getWeeklyCheckIn(
       month,
       todayStartMs,
     );
+    const currentMonthPaidBills = sumPaidBillsForMonth(allBills, monthStartMs, monthEndMs);
 
     const totalSaved = sumCurrency(goals.map((g) => g.savedAmount));
     const totalTarget = sumCurrency(goals.map((g) => g.targetAmount));
@@ -391,6 +421,7 @@ export async function getWeeklyCheckIn(
     const remainingBudget = calculateRemainingBudget(
       currentMonthIncome,
       fromCents(currentMonthExpensesCents),
+      currentMonthPaidBills,
       upcomingBillsTotal,
       totalSaved,
     );
@@ -402,6 +433,7 @@ export async function getWeeklyCheckIn(
       billsDueNext7Days,
       billsDueNext7DaysTotal: sumCurrency(billsDueNext7Days.map((b) => b.amount)),
       spendingThisWeek,
+      currentMonthPaidBills,
       remainingBudget,
       savingsProgress: {
         totalSaved,
