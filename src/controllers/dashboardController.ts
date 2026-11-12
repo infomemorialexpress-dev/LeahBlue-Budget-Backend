@@ -21,6 +21,7 @@ const MONTHLY_INCOME_MULTIPLIERS: Record<PaySchedule, number> = {
   biweekly: 26 / 12,
   'twice-monthly': 2,
   monthly: 1,
+  irregular: 1,
 };
 
 /**
@@ -33,6 +34,15 @@ function countPaychecksInRange(
 ): number {
   const anchor = income.nextPayDate;
   const anchorDay = anchor.getUTCDate();
+
+  if (income.paySchedule === 'irregular') {
+    const anchorMs = Date.UTC(
+      anchor.getUTCFullYear(),
+      anchor.getUTCMonth(),
+      anchor.getUTCDate(),
+    );
+    return anchorMs >= rangeStartMs && anchorMs <= rangeEndMs ? 1 : 0;
+  }
 
   if (income.paySchedule === 'weekly' || income.paySchedule === 'biweekly') {
     const stepMs = (income.paySchedule === 'weekly' ? 7 : 14) * MS_PER_DAY;
@@ -94,6 +104,10 @@ function resolveNextPayDateMs(income: IIncome, todayStartMs: number): number {
   );
 
   if (anchorMs >= todayStartMs) {
+    return anchorMs;
+  }
+
+  if (income.paySchedule === 'irregular') {
     return anchorMs;
   }
 

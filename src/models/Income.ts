@@ -1,12 +1,13 @@
 import mongoose, { Document, Model, Schema, Types } from 'mongoose';
 
-export type PaySchedule = 'weekly' | 'biweekly' | 'twice-monthly' | 'monthly';
+export type PaySchedule = 'weekly' | 'biweekly' | 'twice-monthly' | 'monthly' | 'irregular';
 
 export const PAY_SCHEDULES: readonly PaySchedule[] = [
   'weekly',
   'biweekly',
   'twice-monthly',
   'monthly',
+  'irregular',
 ];
 
 export interface IIncome extends Document {
