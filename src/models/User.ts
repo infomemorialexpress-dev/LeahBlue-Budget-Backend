@@ -4,6 +4,8 @@ export interface IUser extends Document {
   email: string;
   password: string;
   hasPaidAccess: boolean;
+  resetPasswordToken?: string | null;
+  resetPasswordExpires?: Date | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -24,6 +26,14 @@ const userSchema = new Schema<IUser>(
     hasPaidAccess: {
       type: Boolean,
       default: true,
+    },
+    resetPasswordToken: {
+      type: String,
+      default: null,
+    },
+    resetPasswordExpires: {
+      type: Date,
+      default: null,
     },
   },
   {

@@ -11,5 +11,7 @@ export const env = {
   stanStoreAccessKey: process.env.STAN_STORE_ACCESS_KEY || '',
   jwtSecret: process.env.JWT_SECRET || '',
   jwtExpiresIn: process.env.JWT_EXPIRES_IN || '7d',
+  resendApiKey: process.env.RESEND_API_KEY || '',
+  resendFromEmail: process.env.RESEND_FROM_EMAIL || 'onboarding@resend.dev',
 };
 
