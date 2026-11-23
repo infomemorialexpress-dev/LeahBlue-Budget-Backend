@@ -7,6 +7,7 @@ import expenseRoutes from './expenseRoutes';
 import goalRoutes from './goalRoutes';
 import healthRoutes from './healthRoutes';
 import incomeRoutes from './incomeRoutes';
+import paycheckPlanRoutes from './paycheckPlanRoutes';
 
 const router = Router();
 
@@ -17,6 +18,7 @@ router.use('/expenses', expenseRoutes);
 router.use('/bills', billRoutes);
 router.use('/category-budgets', categoryBudgetRoutes);
 router.use('/goals', goalRoutes);
+router.use('/paycheck-plans', paycheckPlanRoutes);
 router.use('/dashboard', dashboardRoutes);
 
 export default router;
