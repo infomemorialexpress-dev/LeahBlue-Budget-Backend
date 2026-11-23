@@ -7,7 +7,13 @@ import {
   requireValidId,
 } from '../utils/controllerHelpers';
 
-const GOAL_FIELDS = ['name', 'targetAmount', 'savedAmount', 'targetDate'] as const;
+const GOAL_FIELDS = [
+  'name',
+  'targetAmount',
+  'savedAmount',
+  'targetDate',
+  'monthlyContribution',
+] as const;
 
 function roundCurrency(value: number): number {
   return Math.round(value * 100) / 100;
@@ -112,6 +118,12 @@ export async function updateGoal(
     const updateQuery: Record<string, unknown> = {};
     if (Object.keys(updates).length > 0) {
       updateQuery.$set = updates;
+    }
+    if (hasContribution) {
+      const contribution = Number(req.body.contribution);
+      updateQuery.$push = {
+        contributions: { amount: contribution, date: new Date() },
+      };
     }
     if (Object.keys(unsetFields).length > 0) {
       updateQuery.$unset = unsetFields;

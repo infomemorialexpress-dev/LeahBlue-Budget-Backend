@@ -1,7 +1,7 @@
 import { NextFunction, Request, Response } from 'express';
 import { Bill, IBill } from '../models/Bill';
 import { Expense } from '../models/Expense';
-import { Goal } from '../models/Goal';
+import { Goal, IGoal, IGoalContribution } from '../models/Goal';
 import { IIncome, Income, PaySchedule } from '../models/Income';
 import { requireUserId } from '../utils/controllerHelpers';
 import {
@@ -143,24 +143,33 @@ function resolveNextPayDateMs(income: IIncome, todayStartMs: number): number {
 }
 
 /**
- * Resolves the next occurrence (>= todayStartMs) of a monthly bill due day (1-31),
- * falling back to the last valid day of shorter months (e.g. 31st -> 30th or 28th/29th).
+ * Resolves the due date for a bill.
+ * If an unpaid bill's due date in the current month has already passed, keeps it in the
+ * current cycle and flags it as overdue so it must still be prepared for immediately.
  */
 function resolveNextBillDueDateMs(
   dueDay: number,
   todayYear: number,
   todayMonth: number,
   todayStartMs: number,
-): number {
+  isPaid: boolean = false,
+): { dueMs: number; isOverdue: boolean } {
   const thisMonthCandidate = buildClampedUtcDateMs(todayYear, todayMonth, dueDay);
-  if (thisMonthCandidate >= todayStartMs) {
-    return thisMonthCandidate;
+
+  if (thisMonthCandidate < todayStartMs) {
+    if (!isPaid) {
+      return { dueMs: thisMonthCandidate, isOverdue: true };
+    }
+    return {
+      dueMs: buildClampedUtcDateMs(todayYear, todayMonth + 1, dueDay),
+      isOverdue: false,
+    };
   }
 
-  return buildClampedUtcDateMs(todayYear, todayMonth + 1, dueDay);
+  return { dueMs: thisMonthCandidate, isOverdue: false };
 }
 
-function serializeUpcomingBill(bill: IBill, dueMs: number) {
+function serializeUpcomingBill(bill: IBill, dueMs: number, isOverdue: boolean) {
   return {
     _id: bill._id,
     name: bill.name,
@@ -169,6 +178,7 @@ function serializeUpcomingBill(bill: IBill, dueMs: number) {
     frequency: bill.frequency,
     category: bill.category,
     isPaid: bill.isPaid,
+    isOverdue,
     nextDueDate: new Date(dueMs).toISOString(),
   };
 }
@@ -187,7 +197,7 @@ function calculateEstimatedMonthlyIncome(incomes: IIncome[]): number {
 }
 
 /**
- * Filters unpaid bills whose month-end-adjusted due date falls before the user's earliest next pay date.
+ * Filters unpaid bills due before the user's earliest next pay date or overdue.
  */
 function computeUpcomingBills(
   incomes: IIncome[],
@@ -201,17 +211,26 @@ function computeUpcomingBills(
       ? Math.min(...incomes.map((inc) => resolveNextPayDateMs(inc, todayStartMs)))
       : null;
 
+  const resolvedUnpaid = unpaidBills.map((bill) => {
+    const { dueMs, isOverdue } = resolveNextBillDueDateMs(
+      bill.dueDate,
+      year,
+      month,
+      todayStartMs,
+      bill.isPaid,
+    );
+    return { bill, dueMs, isOverdue };
+  });
+
   const upcomingBills =
     earliestNextPayDateMs === null
-      ? []
-      : unpaidBills
-          .map((bill) => ({
-            bill,
-            dueMs: resolveNextBillDueDateMs(bill.dueDate, year, month, todayStartMs),
-          }))
-          .filter(({ dueMs }) => dueMs <= earliestNextPayDateMs)
+      ? resolvedUnpaid
           .sort((a, b) => a.dueMs - b.dueMs)
-          .map(({ bill, dueMs }) => serializeUpcomingBill(bill, dueMs));
+          .map(({ bill, dueMs, isOverdue }) => serializeUpcomingBill(bill, dueMs, isOverdue))
+      : resolvedUnpaid
+          .filter(({ dueMs, isOverdue }) => isOverdue || dueMs <= earliestNextPayDateMs)
+          .sort((a, b) => a.dueMs - b.dueMs)
+          .map(({ bill, dueMs, isOverdue }) => serializeUpcomingBill(bill, dueMs, isOverdue));
 
   const upcomingBillsTotal = sumCurrency(upcomingBills.map((bill) => bill.amount));
 
@@ -232,6 +251,38 @@ function sumPaidBillsForMonth(
   }, 0);
 
   return fromCents(paidCents);
+}
+
+/**
+ * Calculates savings contributions/allocations for the current month.
+ * Uses `monthlyContribution` if set, or sums contributions made within the month.
+ * Never subtracts cumulative all-time saved balances from a single month's budget.
+ */
+function calculateCurrentMonthSavings(
+  goals: readonly IGoal[],
+  monthStartMs: number,
+  monthEndMs: number,
+): number {
+  const savingsCents = goals.reduce((sumCents, goal) => {
+    if (typeof goal.monthlyContribution === 'number' && goal.monthlyContribution > 0) {
+      return sumCents + toCents(goal.monthlyContribution);
+    }
+
+    if (Array.isArray(goal.contributions) && goal.contributions.length > 0) {
+      const monthContributions = goal.contributions.reduce(
+        (cSum: number, c: IGoalContribution) => {
+          const cTime = new Date(c.date).getTime();
+          return cTime >= monthStartMs && cTime <= monthEndMs ? cSum + toCents(c.amount) : cSum;
+        },
+        0,
+      );
+      return sumCents + monthContributions;
+    }
+
+    return sumCents;
+  }, 0);
+
+  return fromCents(savingsCents);
 }
 
 function calculateRemainingBudget(
@@ -318,7 +369,11 @@ export async function getDashboardSummary(
     const { earliestNextPayDateMs, upcomingBills, upcomingBillsTotal } =
       computeUpcomingBills(incomes, unpaidBills, year, month, todayStartMs);
 
-    const totalSavingsContributions = sumCurrency(goals.map((goal) => goal.savedAmount));
+    const totalSavingsContributions = calculateCurrentMonthSavings(
+      goals,
+      monthStart.getTime(),
+      monthEnd.getTime(),
+    );
     const remainingBudget = calculateRemainingBudget(
       currentMonthIncome,
       currentMonthExpenses,
@@ -393,13 +448,19 @@ export async function getWeeklyCheckIn(
     const incomeReceivedThisWeek = fromCents(incomeReceivedCents);
 
     const billsDueNext7Days = unpaidBills
-      .map((bill) => ({
-        bill,
-        dueMs: resolveNextBillDueDateMs(bill.dueDate, year, month, todayStartMs),
-      }))
-      .filter(({ dueMs }) => dueMs >= todayStartMs && dueMs <= next7DaysEndMs)
+      .map((bill) => {
+        const { dueMs, isOverdue } = resolveNextBillDueDateMs(
+          bill.dueDate,
+          year,
+          month,
+          todayStartMs,
+          bill.isPaid,
+        );
+        return { bill, dueMs, isOverdue };
+      })
+      .filter(({ dueMs, isOverdue }) => isOverdue || (dueMs >= todayStartMs && dueMs <= next7DaysEndMs))
       .sort((a, b) => a.dueMs - b.dueMs)
-      .map(({ bill, dueMs }) => serializeUpcomingBill(bill, dueMs));
+      .map(({ bill, dueMs, isOverdue }) => serializeUpcomingBill(bill, dueMs, isOverdue));
 
     const spendingThisWeekCents = expenses.reduce((sumCents, expense) => {
       const ts = expense.date.getTime();
@@ -432,12 +493,13 @@ export async function getWeeklyCheckIn(
       (g) => toCents(g.targetAmount) > 0 && toCents(g.savedAmount) >= toCents(g.targetAmount),
     ).length;
 
+    const currentMonthSavings = calculateCurrentMonthSavings(goals, monthStartMs, monthEndMs);
     const remainingBudget = calculateRemainingBudget(
       currentMonthIncome,
       fromCents(currentMonthExpensesCents),
       currentMonthPaidBills,
       upcomingBillsTotal,
-      totalSaved,
+      currentMonthSavings,
     );
 
     res.status(200).json({

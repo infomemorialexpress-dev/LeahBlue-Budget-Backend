@@ -41,15 +41,18 @@ export async function getBills(
     const now = new Date();
     const year = now.getUTCFullYear();
     const month = now.getUTCMonth();
+    const todayStartMs = Date.UTC(year, month, now.getUTCDate());
 
     const bills = await Bill.find({ userId }).sort({ dueDate: 1, name: 1 });
     const payload = bills.map((bill) => {
       const effectiveDueDay = clampDayToMonth(bill.dueDate, year, month);
       const effectiveDueDate = resolveEffectiveDateForMonth(bill.dueDate, year, month);
+      const isOverdue = !bill.isPaid && effectiveDueDate.getTime() < todayStartMs;
       return {
         ...bill.toObject(),
         effectiveDueDay,
         effectiveDueDate: effectiveDueDate.toISOString(),
+        isOverdue,
       };
     });
 

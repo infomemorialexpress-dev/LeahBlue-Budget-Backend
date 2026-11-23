@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import authRoutes from './authRoutes';
 import billRoutes from './billRoutes';
+import categoryBudgetRoutes from './categoryBudgetRoutes';
 import dashboardRoutes from './dashboardRoutes';
 import expenseRoutes from './expenseRoutes';
 import goalRoutes from './goalRoutes';
@@ -14,6 +15,7 @@ router.use('/auth', authRoutes);
 router.use('/incomes', incomeRoutes);
 router.use('/expenses', expenseRoutes);
 router.use('/bills', billRoutes);
+router.use('/category-budgets', categoryBudgetRoutes);
 router.use('/goals', goalRoutes);
 router.use('/dashboard', dashboardRoutes);
 
