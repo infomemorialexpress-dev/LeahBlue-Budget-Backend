@@ -4,6 +4,7 @@ import { NextFunction, Request, Response } from 'express';
 import jwt, { SignOptions } from 'jsonwebtoken';
 import { Resend } from 'resend';
 import { env } from '../config/env';
+import { AccessKey } from '../models/AccessKey';
 import { IUser, User } from '../models/User';
 
 const SALT_ROUNDS = 10;
@@ -37,7 +38,7 @@ function serializeUser(user: IUser) {
 }
 
 /**
- * Registers a new user after verifying the Stan Store access key.
+ * Registers a new user after verifying the unique Stan Store activation token (or legacy static key).
  */
 export async function register(
   req: Request,
@@ -45,7 +46,7 @@ export async function register(
   next: NextFunction,
 ): Promise<void> {
   try {
-    const { email, password, accessKey } = req.body ?? {};
+    const { email, password, accessKey, token } = req.body ?? {};
 
     if (typeof email !== 'string' || typeof password !== 'string') {
       res.status(400).json({ message: 'Email and password are required' });
@@ -63,15 +64,46 @@ export async function register(
       return;
     }
 
-    const expectedAccessKey = process.env.STAN_STORE_ACCESS_KEY;
-    if (!expectedAccessKey) {
-      res.status(500).json({ message: 'STAN_STORE_ACCESS_KEY is not configured' });
+    const candidateToken =
+      typeof token === 'string' && token.trim()
+        ? token.trim()
+        : typeof accessKey === 'string' && accessKey.trim()
+          ? accessKey.trim()
+          : '';
+
+    if (!candidateToken) {
+      res.status(403).json({
+        message: 'Activation link or access key is required to register. Access is only available with a valid Stan Store purchase.',
+      });
       return;
     }
 
-    if (typeof accessKey !== 'string' || accessKey !== expectedAccessKey) {
+    let keyDoc = await AccessKey.findOne({ token: candidateToken, isUsed: false });
+    let isAuthorized = false;
+
+    if (keyDoc) {
+      if (keyDoc.expiresAt && keyDoc.expiresAt.getTime() < Date.now()) {
+        res.status(403).json({
+          message: 'This activation link has expired. Please contact support.',
+        });
+        return;
+      }
+
+      if (keyDoc.email && keyDoc.email.toLowerCase() !== normalizedEmail) {
+        res.status(400).json({
+          message: `This activation link is assigned to a different email address (${keyDoc.email}). Please register using that email or contact support.`,
+        });
+        return;
+      }
+
+      isAuthorized = true;
+    } else if (process.env.STAN_STORE_ACCESS_KEY && candidateToken === process.env.STAN_STORE_ACCESS_KEY) {
+      isAuthorized = true;
+    }
+
+    if (!isAuthorized) {
       res.status(403).json({
-        message: 'Invalid access key. Access is only available with a valid Stan Store purchase.',
+        message: 'This activation link is invalid or has already been used. Please verify your purchase.',
       });
       return;
     }
@@ -90,12 +122,71 @@ export async function register(
       hasPaidAccess: true,
     });
 
-    const token = signAuthToken(user);
+    if (keyDoc) {
+      keyDoc.isUsed = true;
+      keyDoc.usedAt = new Date();
+      await keyDoc.save();
+    }
+
+    const authToken = signAuthToken(user);
 
     res.status(201).json({
       message: 'User registered successfully',
-      token,
+      token: authToken,
       user: serializeUser(user),
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
+ * Validates an activation token on page load to pre-verify purchase and prefill email.
+ */
+export async function verifyActivationToken(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    const rawToken = req.params.token;
+    const token = typeof rawToken === 'string' ? rawToken.trim() : '';
+    if (!token) {
+      res.status(400).json({ valid: false, message: 'Token is required' });
+      return;
+    }
+
+    if (process.env.STAN_STORE_ACCESS_KEY && token === process.env.STAN_STORE_ACCESS_KEY) {
+      res.status(200).json({ valid: true, email: '', isStaticKey: true });
+      return;
+    }
+
+    const keyDoc = await AccessKey.findOne({ token });
+    if (!keyDoc) {
+      res.status(404).json({ valid: false, message: 'This activation link is invalid.' });
+      return;
+    }
+
+    if (keyDoc.isUsed) {
+      res.status(400).json({
+        valid: false,
+        message: 'This activation link has already been used. Please sign in to your existing account.',
+      });
+      return;
+    }
+
+    if (keyDoc.expiresAt && keyDoc.expiresAt.getTime() < Date.now()) {
+      res.status(400).json({
+        valid: false,
+        message: 'This activation link has expired. Please contact support.',
+      });
+      return;
+    }
+
+    res.status(200).json({
+      valid: true,
+      email: keyDoc.email,
+      customerName: keyDoc.customerName,
     });
   } catch (error) {
     next(error);

@@ -8,11 +8,13 @@ import goalRoutes from './goalRoutes';
 import healthRoutes from './healthRoutes';
 import incomeRoutes from './incomeRoutes';
 import paycheckPlanRoutes from './paycheckPlanRoutes';
+import webhookRoutes from './webhookRoutes';
 
 const router = Router();
 
 router.use('/health', healthRoutes);
 router.use('/auth', authRoutes);
+router.use('/webhooks', webhookRoutes);
 router.use('/incomes', incomeRoutes);
 router.use('/expenses', expenseRoutes);
 router.use('/bills', billRoutes);

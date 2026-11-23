@@ -1,9 +1,16 @@
 import { Router } from 'express';
-import { forgotPassword, login, register, resetPassword } from '../controllers/authController';
+import {
+  forgotPassword,
+  login,
+  register,
+  resetPassword,
+  verifyActivationToken,
+} from '../controllers/authController';
 
 const router = Router();
 
 router.post('/register', register);
+router.get('/verify-token/:token', verifyActivationToken);
 router.post('/login', login);
 router.post('/forgot-password', forgotPassword);
 router.post('/reset-password/:token', resetPassword);
