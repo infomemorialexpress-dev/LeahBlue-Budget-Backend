@@ -15,6 +15,7 @@ router.use(authMiddleware);
 router.route('/').get(getBills).post(createBill);
 router.route('/:id').put(updateBill).patch(updateBill).delete(deleteBill);
 router.patch('/:id/pay', markBillAsPaid);
+router.patch('/:id/paid', markBillAsPaid);
 
 export default router;
 

@@ -2,6 +2,7 @@ import mongoose, { Document, Model, Schema, Types } from 'mongoose';
 
 export interface IExpense extends Document {
   userId: Types.ObjectId;
+  billId?: Types.ObjectId | null;
   description: string;
   amount: number;
   category: string;
@@ -17,6 +18,12 @@ const expenseSchema = new Schema<IExpense>(
       type: Schema.Types.ObjectId,
       ref: 'User',
       required: true,
+      index: true,
+    },
+    billId: {
+      type: Schema.Types.ObjectId,
+      ref: 'Bill',
+      default: null,
       index: true,
     },
     description: {

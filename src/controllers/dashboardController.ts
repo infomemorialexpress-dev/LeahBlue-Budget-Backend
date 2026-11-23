@@ -241,9 +241,13 @@ function sumPaidBillsForMonth(
   bills: readonly IBill[],
   monthStartMs: number,
   monthEndMs: number,
+  excludeBillIds?: ReadonlySet<string>,
 ): number {
   const paidCents = bills.reduce((sumCents, bill) => {
     if (!bill.isPaid) return sumCents;
+    if (excludeBillIds && excludeBillIds.has(bill._id.toString())) {
+      return sumCents;
+    }
     const updatedMs = bill.updatedAt.getTime();
     return updatedMs >= monthStartMs && updatedMs <= monthEndMs
       ? sumCents + toCents(bill.amount)
@@ -332,10 +336,26 @@ export async function getDashboardSummary(
     ]);
 
     const unpaidBills = allBills.filter((bill) => !bill.isPaid);
-    const currentMonthPaidBills = sumPaidBillsForMonth(
+
+    // Track bills that already generated an Expense in the current month to prevent double-counting
+    const billIdsWithExpenseInCurrentMonth = new Set(
+      expenses.filter((e) => e.billId).map((e) => e.billId!.toString()),
+    );
+
+    // Unlinked paid bills (e.g. legacy records without a linked Expense)
+    const unlinkedPaidBillsThisMonth = sumPaidBillsForMonth(
       allBills,
       monthStart.getTime(),
       monthEnd.getTime(),
+      billIdsWithExpenseInCurrentMonth,
+    );
+
+    // Total paid bills for reporting (linked bill expenses + unlinked paid bills)
+    const linkedBillExpensesCents = expenses.reduce((sumCents, expense) => {
+      return expense.billId ? sumCents + toCents(expense.amount) : sumCents;
+    }, 0);
+    const currentMonthPaidBills = fromCents(
+      linkedBillExpensesCents + toCents(unlinkedPaidBillsThisMonth),
     );
 
     const currentMonthIncome = calculateEstimatedMonthlyIncome(incomes);
@@ -374,10 +394,11 @@ export async function getDashboardSummary(
       monthStart.getTime(),
       monthEnd.getTime(),
     );
+    // Deduct unlinkedPaidBillsThisMonth rather than all paid bills since linked bills are already in currentMonthExpenses
     const remainingBudget = calculateRemainingBudget(
       currentMonthIncome,
       currentMonthExpenses,
-      currentMonthPaidBills,
+      unlinkedPaidBillsThisMonth,
       upcomingBillsTotal,
       totalSavingsContributions,
     );
@@ -485,7 +506,32 @@ export async function getWeeklyCheckIn(
       month,
       todayStartMs,
     );
-    const currentMonthPaidBills = sumPaidBillsForMonth(allBills, monthStartMs, monthEndMs);
+
+    const billIdsWithExpenseInMonth = new Set(
+      expenses
+        .filter(
+          (e) =>
+            e.billId &&
+            e.date.getTime() >= monthStartMs &&
+            e.date.getTime() <= monthEndMs,
+        )
+        .map((e) => e.billId!.toString()),
+    );
+    const unlinkedPaidBillsThisMonth = sumPaidBillsForMonth(
+      allBills,
+      monthStartMs,
+      monthEndMs,
+      billIdsWithExpenseInMonth,
+    );
+    const linkedBillExpensesCents = expenses.reduce((sumCents, expense) => {
+      const ts = expense.date.getTime();
+      return expense.billId && ts >= monthStartMs && ts <= monthEndMs
+        ? sumCents + toCents(expense.amount)
+        : sumCents;
+    }, 0);
+    const currentMonthPaidBills = fromCents(
+      linkedBillExpensesCents + toCents(unlinkedPaidBillsThisMonth),
+    );
 
     const totalSaved = sumCurrency(goals.map((g) => g.savedAmount));
     const totalTarget = sumCurrency(goals.map((g) => g.targetAmount));
@@ -497,7 +543,7 @@ export async function getWeeklyCheckIn(
     const remainingBudget = calculateRemainingBudget(
       currentMonthIncome,
       fromCents(currentMonthExpensesCents),
-      currentMonthPaidBills,
+      unlinkedPaidBillsThisMonth,
       upcomingBillsTotal,
       currentMonthSavings,
     );

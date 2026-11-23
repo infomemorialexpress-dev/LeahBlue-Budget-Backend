@@ -10,6 +10,12 @@ export const BILL_FREQUENCIES: readonly BillFrequency[] = [
   'yearly',
 ];
 
+export interface IBillPaymentHistory {
+  paidAt: Date;
+  amount: number;
+  expenseId?: Types.ObjectId;
+}
+
 export interface IBill extends Document {
   userId: Types.ObjectId;
   name: string;
@@ -18,6 +24,8 @@ export interface IBill extends Document {
   frequency: BillFrequency;
   category: string;
   isPaid: boolean;
+  lastPaidDate?: Date;
+  paymentHistory?: IBillPaymentHistory[];
   createdAt: Date;
   updatedAt: Date;
 }
@@ -64,6 +72,25 @@ const billSchema = new Schema<IBill>(
       type: Boolean,
       default: false,
     },
+    lastPaidDate: {
+      type: Date,
+    },
+    paymentHistory: [
+      {
+        paidAt: {
+          type: Date,
+          default: Date.now,
+        },
+        amount: {
+          type: Number,
+          required: true,
+        },
+        expenseId: {
+          type: Schema.Types.ObjectId,
+          ref: 'Expense',
+        },
+      },
+    ],
   },
   {
     timestamps: true,
