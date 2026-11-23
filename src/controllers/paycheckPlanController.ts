@@ -194,10 +194,47 @@ export async function createPaycheckPlan(
         }))
       : [];
 
+    const targetPayDate = payDate ? new Date(payDate) : new Date();
+    const startOfDay = new Date(
+      Date.UTC(targetPayDate.getUTCFullYear(), targetPayDate.getUTCMonth(), targetPayDate.getUTCDate()),
+    );
+    const endOfDay = new Date(
+      Date.UTC(
+        targetPayDate.getUTCFullYear(),
+        targetPayDate.getUTCMonth(),
+        targetPayDate.getUTCDate(),
+        23,
+        59,
+        59,
+        999,
+      ),
+    );
+
+    // If a plan already exists for this user and this calendar day, update it to prevent duplicates
+    const existingPlan = await PaycheckPlan.findOne({
+      userId,
+      payDate: { $gte: startOfDay, $lte: endOfDay },
+    });
+
+    if (existingPlan) {
+      existingPlan.incomeId = incomeId || existingPlan.incomeId;
+      existingPlan.payDate = targetPayDate;
+      existingPlan.paycheckAmount = roundCurrency(Number(paycheckAmount));
+      existingPlan.reservedBillsTotal = Math.max(0, roundCurrency(Number(reservedBillsTotal) || 0));
+      existingPlan.categoryAllocations = sanitizedCategories;
+      existingPlan.savingsAllocation = Math.max(0, roundCurrency(Number(savingsAllocation) || 0));
+      existingPlan.personalSpending = Math.max(0, roundCurrency(Number(personalSpending) || 0));
+      existingPlan.remainingUnallocated = roundCurrency(Number(remainingUnallocated) || 0);
+
+      await existingPlan.save();
+      res.status(200).json(existingPlan);
+      return;
+    }
+
     const plan = await PaycheckPlan.create({
       userId,
       incomeId: incomeId || undefined,
-      payDate: payDate ? new Date(payDate) : new Date(),
+      payDate: targetPayDate,
       paycheckAmount: roundCurrency(Number(paycheckAmount)),
       reservedBillsTotal: Math.max(0, roundCurrency(Number(reservedBillsTotal) || 0)),
       categoryAllocations: sanitizedCategories,
@@ -207,6 +244,31 @@ export async function createPaycheckPlan(
     });
 
     res.status(201).json(plan);
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
+ * Deletes a saved paycheck plan by ID.
+ */
+export async function deletePaycheckPlan(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    const userId = requireUserId(req, res);
+    if (!userId) return;
+
+    const { id } = req.params;
+    const plan = await PaycheckPlan.findOneAndDelete({ _id: id, userId });
+    if (!plan) {
+      res.status(404).json({ message: 'Paycheck plan not found' });
+      return;
+    }
+
+    res.status(200).json({ message: 'Paycheck plan deleted successfully', id });
   } catch (error) {
     next(error);
   }
