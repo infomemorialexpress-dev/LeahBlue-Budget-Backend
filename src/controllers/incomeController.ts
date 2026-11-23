@@ -7,12 +7,43 @@ import {
   requireValidId,
 } from '../utils/controllerHelpers';
 import {
+  buildClampedUtcDate,
   parseAndClampUtcDate,
   resolveEffectiveDateForMonth,
   roundCurrency,
 } from '../utils/financeUtils';
 
-const INCOME_FIELDS = ['sourceName', 'amount', 'paySchedule', 'nextPayDate'] as const;
+export function resolveTwiceMonthlyNextPayDate(
+  firstDay: number,
+  secondDay: number,
+  now: Date = new Date(),
+): Date {
+  const y = now.getUTCFullYear();
+  const m = now.getUTCMonth();
+  const todayStartMs = Date.UTC(y, m, now.getUTCDate());
+
+  const d1 = Math.min(firstDay, secondDay);
+  const d2 = Math.max(firstDay, secondDay);
+
+  for (let offset = 0; offset <= 2; offset += 1) {
+    const c1 = buildClampedUtcDate(y, m + offset, d1);
+    if (c1.getTime() >= todayStartMs) return c1;
+
+    const c2 = buildClampedUtcDate(y, m + offset, d2);
+    if (c2.getTime() >= todayStartMs) return c2;
+  }
+
+  return buildClampedUtcDate(y, m, d1);
+}
+
+const INCOME_FIELDS = [
+  'sourceName',
+  'amount',
+  'paySchedule',
+  'nextPayDate',
+  'firstPayDay',
+  'secondPayDay',
+] as const;
 
 function normalizeIncomePayload(payload: Record<string, unknown>): Record<string, unknown> {
   const normalized = { ...payload };
@@ -24,11 +55,36 @@ function normalizeIncomePayload(payload: Record<string, unknown>): Record<string
     }
   }
 
-  if (normalized.nextPayDate !== undefined) {
+  if (normalized.firstPayDay !== undefined && normalized.firstPayDay !== null && normalized.firstPayDay !== '') {
+    const d1 = Number(normalized.firstPayDay);
+    if (Number.isInteger(d1) && d1 >= 1 && d1 <= 31) {
+      normalized.firstPayDay = d1;
+    }
+  }
+
+  if (normalized.secondPayDay !== undefined && normalized.secondPayDay !== null && normalized.secondPayDay !== '') {
+    const d2 = Number(normalized.secondPayDay);
+    if (Number.isInteger(d2) && d2 >= 1 && d2 <= 31) {
+      normalized.secondPayDay = d2;
+    }
+  }
+
+  if (
+    normalized.paySchedule === 'twice-monthly' &&
+    typeof normalized.firstPayDay === 'number' &&
+    typeof normalized.secondPayDay === 'number'
+  ) {
+    normalized.nextPayDate = resolveTwiceMonthlyNextPayDate(
+      normalized.firstPayDay,
+      normalized.secondPayDay,
+    );
+  } else if (normalized.nextPayDate !== undefined) {
     const clampedDate = parseAndClampUtcDate(normalized.nextPayDate);
     if (clampedDate) {
       normalized.nextPayDate = clampedDate;
     }
+  } else if (normalized.paySchedule === 'irregular') {
+    normalized.nextPayDate = new Date();
   }
 
   return normalized;

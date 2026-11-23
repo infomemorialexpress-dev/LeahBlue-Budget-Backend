@@ -80,8 +80,20 @@ function countPaychecksInRange(
       const payMs = buildClampedUtcDateMs(y, m, anchorDay);
       if (payMs >= rangeStartMs && payMs <= rangeEndMs) count += 1;
     } else {
-      const firstDay = anchorDay <= 15 ? anchorDay : anchorDay - 15;
-      const secondDay = firstDay + 15;
+      const d1 =
+        typeof income.firstPayDay === 'number'
+          ? income.firstPayDay
+          : anchorDay <= 15
+            ? anchorDay
+            : anchorDay - 15;
+      const d2 =
+        typeof income.secondPayDay === 'number'
+          ? income.secondPayDay
+          : d1 + 15 <= 31
+            ? d1 + 15
+            : d1;
+      const firstDay = Math.min(d1, d2);
+      const secondDay = Math.max(d1, d2);
       const firstMs = buildClampedUtcDateMs(y, m, firstDay);
       const secondMs = buildClampedUtcDateMs(y, m, secondDay);
       if (firstMs >= rangeStartMs && firstMs <= rangeEndMs) count += 1;
@@ -123,8 +135,20 @@ function resolveNextPayDateMs(income: IIncome, todayStartMs: number): number {
   const anchorDay = anchor.getUTCDate();
 
   if (income.paySchedule === 'twice-monthly') {
-    const firstDay = anchorDay <= 15 ? anchorDay : anchorDay - 15;
-    const secondDay = firstDay + 15;
+    const d1 =
+      typeof income.firstPayDay === 'number'
+        ? income.firstPayDay
+        : anchorDay <= 15
+          ? anchorDay
+          : anchorDay - 15;
+    const d2 =
+      typeof income.secondPayDay === 'number'
+        ? income.secondPayDay
+        : d1 + 15 <= 31
+          ? d1 + 15
+          : d1;
+    const firstDay = Math.min(d1, d2);
+    const secondDay = Math.max(d1, d2);
 
     for (let offset = 0; offset < 3; offset += 1) {
       const firstCandidate = buildClampedUtcDateMs(y, m + offset, firstDay);
@@ -194,6 +218,22 @@ function calculateEstimatedMonthlyIncome(incomes: IIncome[]): number {
   }, 0);
 
   return fromCents(totalCents);
+}
+
+/**
+ * Calculates income actually received so far this month (cash-in-hand up to today).
+ */
+function calculateReceivedMonthlyIncome(
+  incomes: IIncome[],
+  monthStartMs: number,
+  todayEndMs: number,
+): number {
+  const receivedCents = incomes.reduce((sumCents, income) => {
+    const count = countPaychecksInRange(income, monthStartMs, todayEndMs);
+    return sumCents + toCents(income.amount) * count;
+  }, 0);
+
+  return fromCents(receivedCents);
 }
 
 /**
@@ -358,7 +398,14 @@ export async function getDashboardSummary(
       linkedBillExpensesCents + toCents(unlinkedPaidBillsThisMonth),
     );
 
-    const currentMonthIncome = calculateEstimatedMonthlyIncome(incomes);
+    const todayEndMs = Date.UTC(year, month, now.getUTCDate(), 23, 59, 59, 999);
+    const projectedMonthlyIncome = calculateEstimatedMonthlyIncome(incomes);
+    const incomeReceivedThisMonth = calculateReceivedMonthlyIncome(
+      incomes,
+      monthStart.getTime(),
+      todayEndMs,
+    );
+    const currentMonthIncome = projectedMonthlyIncome;
 
     const categoryMap = new Map<string, { totalCents: number; count: number }>();
     let totalExpensesCents = 0;
@@ -394,24 +441,31 @@ export async function getDashboardSummary(
       monthStart.getTime(),
       monthEnd.getTime(),
     );
-    // Deduct unlinkedPaidBillsThisMonth rather than all paid bills since linked bills are already in currentMonthExpenses
-    const remainingBudget = calculateRemainingBudget(
-      currentMonthIncome,
+    // Safe-to-Spend formula reflects cash-in-hand actually received so far,
+    // deducting current expenses, unlinked paid bills, upcoming bills before next payday, and current month savings.
+    const availableUntilPayday = calculateRemainingBudget(
+      incomeReceivedThisMonth,
       currentMonthExpenses,
       unlinkedPaidBillsThisMonth,
       upcomingBillsTotal,
       totalSavingsContributions,
     );
+    const remainingBudget = availableUntilPayday;
 
     const monthLabel = `${year}-${String(month + 1).padStart(2, '0')}`;
 
     res.status(200).json({
       month: monthLabel,
+      incomeReceivedThisMonth,
+      projectedMonthlyIncome,
       currentMonthIncome,
       currentMonthExpenses,
       currentMonthPaidBills,
       upcomingBillsTotal,
+      billsToPrepareFor: upcomingBillsTotal,
       totalSavingsContributions,
+      savingsThisMonth: totalSavingsContributions,
+      availableUntilPayday,
       remainingBudget,
       expensesByCategory,
       nextPayDate:
@@ -489,7 +543,13 @@ export async function getWeeklyCheckIn(
     }, 0);
     const spendingThisWeek = fromCents(spendingThisWeekCents);
 
-    const currentMonthIncome = calculateEstimatedMonthlyIncome(incomes);
+    const projectedMonthlyIncome = calculateEstimatedMonthlyIncome(incomes);
+    const incomeReceivedThisMonth = calculateReceivedMonthlyIncome(
+      incomes,
+      monthStart.getTime(),
+      todayEndMs,
+    );
+    const currentMonthIncome = projectedMonthlyIncome;
     const monthStartMs = monthStart.getTime();
     const monthEndMs = monthEnd.getTime();
     const currentMonthExpensesCents = expenses.reduce((sumCents, expense) => {

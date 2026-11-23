@@ -16,6 +16,8 @@ export interface IIncome extends Document {
   amount: number;
   paySchedule: PaySchedule;
   nextPayDate: Date;
+  firstPayDay?: number;
+  secondPayDay?: number;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -46,6 +48,16 @@ const incomeSchema = new Schema<IIncome>(
     nextPayDate: {
       type: Date,
       required: true,
+    },
+    firstPayDay: {
+      type: Number,
+      min: 1,
+      max: 31,
+    },
+    secondPayDay: {
+      type: Number,
+      min: 1,
+      max: 31,
     },
   },
   {
